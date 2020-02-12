@@ -1,3 +1,4 @@
+import os
 import sys
 import ast
 # Commented out because Pyinstaller failed to run.
@@ -22,11 +23,12 @@ class UdonCompiler:
   def_func_table: DefFuncTable
   udon_method_table: UdonMethodTable
   node: ast.AST
+  cwd: str
   current_func_ret_type: Optional[UdonTypeName]
   current_break_label: Optional[LabelName]
   current_continue_label: Optional[LabelName]
 
-  def __init__(self, code: str) -> None:
+  def __init__(self, filePath: str) -> None:
     self.var_table = VarTable()
     self.def_func_table = DefFuncTable()
     self.uasm = UdonAssembly(self.var_table, self.def_func_table)
@@ -34,7 +36,16 @@ class UdonCompiler:
     self.current_func_ret_type = None
     self.current_break_label = None
     self.current_continue_label = None
+    f = open(filePath, encoding="utf-8")
+    pycode = f.read()
+    f.close()
+    self.cwd = os.path.dirname(filePath)
+    print('===')
+    print('===')
+    print(self.cwd)
+    self.node = self.parse_ast(pycode)
 
+  def parse_ast(self, code: str) -> ast.AST:
     # IGNORE annotation
     # I want to give the editor a hint as Python code, but write lines that I don't want to parse.
     # Delete the line containing IGNORE_LINE for that purpose.
@@ -47,7 +58,11 @@ class UdonCompiler:
         replaced_code += f'{code_line}\n'
       else:
         replaced_code += f'\n'
-    self.node = ast.parse(replaced_code)
+    return ast.parse(replaced_code)
+
+  def print_ast(self, node: ast.AST):
+    # print(self.print_ast(node))
+    return
 
   def make_uasm_code(self) -> str:
     # return address
@@ -56,13 +71,8 @@ class UdonCompiler:
     self.var_table.add_var(VarName('this_trans'), UdonTypeName('UnityEngineTransform'), 'this')
     self.var_table.add_var(VarName('this_gameObj'), UdonTypeName('UnityEngineGameObject'), 'this')
 
-
     # parse and eval AST
-    # FORCE CAST, NO CHECK
-    node_body = cast(ast.Module, self.node)
-    body: List[ast.stmt] = node_body.body
-    self.pre_check_func_defs(body)
-    self.eval_body(body)
+    self.process_body(self.node)
 
     ret_code: str = ''
     ret_code += self.var_table.make_data_seg()
@@ -70,9 +80,12 @@ class UdonCompiler:
     ret_code = self.uasm.replace_tmp_adrr(ret_code)
     return ret_code
 
-  def print_ast(self, node: ast.AST):
-    # print(self.print_ast(node))
-    return
+  def process_body(self, node: ast.AST) -> None:
+    # FORCE CAST, NO CHECK
+    node_body = cast(ast.Module, node)
+    body: List[ast.stmt] = node_body.body
+    self.pre_check_func_defs(body)
+    self.eval_body(body)
 
   def pre_check_func_defs(self, body: List[ast.stmt]) -> None:
     stmt: ast.stmt
@@ -327,6 +340,32 @@ class UdonCompiler:
     # The compiler skips Import and ImportFrom statements to complete the editor using Python class files.
     # (The compiler does not raise an error when reading Import / ImportFrom statements.)
     elif type(stmt) is ast.Import:
+      # FORCE CAST
+      import_stmt: ast.Import = cast(ast.Import, stmt)
+
+      for alia in import_stmt.names:
+        print("DEBUG Importing file:" + alia.name)
+        # Handle relative path and standard library path:
+        import_path_parts = alia.name.split('.')
+        import_path: str
+        if import_path_parts[0] == '_':
+          import_path = os.path.join(self.cwd, import_path_parts[1] + '.py')
+        else:
+          import_path = os.path.join('api', import_path_parts[0] + '.py')
+
+        # Read file and feed into compiler
+        try:
+          f = open(import_path, encoding="utf-8")
+          pycode = f.read()
+          f.close()
+          self.process_body(self.parse_ast(pycode))
+        except Exception as e:
+          if args.cdbg:
+            t, v, tb = sys.exc_info()
+            print(traceback.format_exc())
+          else:
+            print(e)
+      
       # TODO: Add Include system like C
       # Relative path include:
       #   import _.aaa.bbb.py # Include the code of ./aaa/bbb.py.
@@ -744,10 +783,7 @@ if __name__ == '__main__':
   args = arg_parser.parse_args()
 
   try:
-    f = open(args.input, encoding="utf-8")
-    pycode = f.read()
-    f.close()
-    comp = UdonCompiler(pycode)
+    comp = UdonCompiler(args.input)
     asm = comp.make_uasm_code()
     f = open(args.output, 'w')
     f.write(asm)

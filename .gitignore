@@ -15,4 +15,5 @@ ___*/
 build/
 dist/
 sample/udon_classes
+api/udon_classes
 UdonPie_release.zip
